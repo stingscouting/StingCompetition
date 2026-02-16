@@ -6,32 +6,17 @@ describe("resolveDailyStreak", () => {
     expect(
       resolveDailyStreak({
         hadMeetingToday: true,
-        previousStreak: 2,
-        shieldAvailable: true,
-        shieldUsed: false
+        previousStreak: 2
       })
-    ).toEqual({ streakCount: 3, shieldUsed: false });
+    ).toEqual({ streakCount: 3 });
   });
 
-  it("consumes shield on first missed day", () => {
+  it("resets to 0 when meeting is missed (reactive model)", () => {
     expect(
       resolveDailyStreak({
         hadMeetingToday: false,
-        previousStreak: 4,
-        shieldAvailable: true,
-        shieldUsed: false
+        previousStreak: 4
       })
-    ).toEqual({ streakCount: 4, shieldUsed: true });
-  });
-
-  it("resets streak when shield already used", () => {
-    expect(
-      resolveDailyStreak({
-        hadMeetingToday: false,
-        previousStreak: 4,
-        shieldAvailable: true,
-        shieldUsed: true
-      })
-    ).toEqual({ streakCount: 0, shieldUsed: true });
+    ).toEqual({ streakCount: 0 });
   });
 });
