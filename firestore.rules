@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function userCompanyId() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /companies/{companyId} {
+      allow read: if true; // Public leaderboard - anyone can view
+      allow update: if false;
+      allow create, delete: if isAdmin();
+    }
+
+    match /competition/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /rulesContent/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /meetings/{meetingId} {
+      allow read: if signedIn();
+      allow create: if false;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /bestPractices/{id} {
+      allow read: if signedIn();
+      allow create: if false;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /activityFeed/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /dailySnapshots/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

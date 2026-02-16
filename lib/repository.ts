@@ -1,0 +1,172 @@
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { adminDb } from "@/lib/firebase-admin";
+import { DEFAULT_MIN_COMPANIES } from "@/lib/constants";
+import { incrementalDelta } from "@/lib/scoring";
+import { nowIso } from "@/lib/time";
+import { normalizeProspect } from "@/lib/validation";
+import type { BestPracticeStatus, CompetitionConfig, Company, Meeting } from "@/lib/types";
+
+export async function getCompetition(): Promise<CompetitionConfig | null> {
+  const doc = await adminDb.collection("competition").doc("current").get();
+  if (!doc.exists) {
+    return null;
+  }
+  return doc.data() as CompetitionConfig;
+}
+
+export async function getCompany(companyId: string): Promise<Company | null> {
+  const doc = await adminDb.collection("companies").doc(companyId).get();
+  if (!doc.exists) {
+    return null;
+  }
+  return { id: doc.id, ...(doc.data() as Omit<Company, "id">) };
+}
+
+export async function countSubscribedCompanies(): Promise<number> {
+  const snap = await adminDb.collection("companies").where("subscribed", "==", true).get();
+  return snap.size;
+}
+
+export async function activateCompetition(input: {
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  rulesVersion: string;
+}): Promise<void> {
+  const subscribedCount = await countSubscribedCompanies();
+  if (subscribedCount < DEFAULT_MIN_COMPANIES) {
+    throw new Error("At least 5 subscribed companies are required");
+  }
+
+  await adminDb.collection("competition").doc("current").set({
+    id: "current",
+    startAt: input.startAt,
+    endAt: input.endAt,
+    timezone: input.timezone,
+    status: "ACTIVE",
+    minCompanies: DEFAULT_MIN_COMPANIES,
+    rulesVersion: input.rulesVersion
+  });
+}
+
+export async function getCompanyDayMeetingCount(companyId: string, dateKey: string): Promise<number> {
+  const snap = await adminDb
+    .collection("meetings")
+    .where("companyId", "==", companyId)
+    .where("dateKey", "==", dateKey)
+    .where("status", "==", "valid")
+    .get();
+
+  return snap.size;
+}
+
+export async function duplicateMeetingExists(companyId: string, prospectCompanyName: string, meetingAt: string) {
+  const normalized = normalizeProspect(prospectCompanyName);
+  const snap = await adminDb
+    .collection("meetings")
+    .where("companyId", "==", companyId)
+    .where("prospectNormalized", "==", normalized)
+    .where("meetingAt", "==", meetingAt)
+    .where("status", "==", "valid")
+    .limit(1)
+    .get();
+
+  return !snap.empty;
+}
+
+export async function createMeeting(input: {
+  companyId: string;
+  prospectCompanyName: string;
+  contactName: string;
+  meetingAt: string;
+  durationMinutes: number;
+  type: "digital" | "physical";
+  createdAt: string;
+  submissionDateKey: string;
+}): Promise<Meeting> {
+  const dateKey = input.submissionDateKey;
+  const currentCount = await getCompanyDayMeetingCount(input.companyId, dateKey);
+  const nextCount = currentCount + 1;
+  const delta = incrementalDelta(currentCount, nextCount);
+  const createdAt = input.createdAt || nowIso();
+
+  const ref = adminDb.collection("meetings").doc();
+  const normalized = normalizeProspect(input.prospectCompanyName);
+  const meeting: Omit<Meeting, "id"> = {
+    companyId: input.companyId,
+    prospectCompanyName: input.prospectCompanyName,
+    contactName: input.contactName,
+    meetingAt: input.meetingAt,
+    durationMinutes: input.durationMinutes,
+    type: input.type,
+    createdAt,
+    validated: true,
+    status: "valid",
+    dateKey
+  };
+
+  await adminDb.runTransaction(async (tx) => {
+    const companyRef = adminDb.collection("companies").doc(input.companyId);
+    const companyDoc = await tx.get(companyRef);
+    if (!companyDoc.exists) {
+      throw new Error("Company not found");
+    }
+
+    tx.set(ref, {
+      ...meeting,
+      prospectNormalized: normalized
+    });
+
+    tx.update(companyRef, {
+      totalPoints: FieldValue.increment(delta),
+      totalValidMeetings: FieldValue.increment(1),
+      lastSubmissionDate: dateKey,
+      updatedAt: Timestamp.now()
+    });
+
+    tx.set(
+      adminDb.collection("activityFeed").doc(),
+      {
+        companyId: input.companyId,
+        type: "meeting_submitted",
+        message: `New meeting with ${input.prospectCompanyName}`,
+        createdAt
+      },
+      { merge: true }
+    );
+  });
+
+  return { id: ref.id, ...meeting };
+}
+
+export async function updateBestPracticeStatus(input: {
+  id: string;
+  status: BestPracticeStatus;
+  reviewedBy: string;
+}) {
+  const ref = adminDb.collection("bestPractices").doc(input.id);
+  const doc = await ref.get();
+  if (!doc.exists) {
+    throw new Error("Best practice not found");
+  }
+
+  const data = doc.data() as { companyId: string; status: BestPracticeStatus };
+
+  await adminDb.runTransaction(async (tx) => {
+    const companyRef = adminDb.collection("companies").doc(data.companyId);
+    const companyDoc = await tx.get(companyRef);
+    const company = companyDoc.data() as { shieldAvailable?: boolean } | undefined;
+
+    tx.update(ref, {
+      status: input.status,
+      reviewedBy: input.reviewedBy,
+      reviewedAt: nowIso()
+    });
+
+    if (input.status === "approved") {
+      if (companyDoc.exists && !company?.shieldAvailable) {
+        tx.update(companyRef, { shieldAvailable: true });
+      }
+    }
+  });
+}

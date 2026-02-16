@@ -1,0 +1,21 @@
+{
+  "name": "sting-sales-sprint-functions",
+  "private": true,
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "firebase-functions": "^6.2.0",
+    "resend": "^4.1.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
