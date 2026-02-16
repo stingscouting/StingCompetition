@@ -24,9 +24,23 @@ export default function AdminPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(clientAuth, (user) => {
-      const companyId = localStorage.getItem("companyId");
-      if (!user && !companyId) {
+    const unsub = onAuthStateChanged(clientAuth, async (user) => {
+      if (!user) {
+        router.push("/");
+        return;
+      }
+
+      try {
+        const res = await authorizedFetch("/api/auth/me");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.user.role !== "admin") {
+            router.push("/");
+          }
+        } else {
+          router.push("/");
+        }
+      } catch (err) {
         router.push("/");
       }
     });

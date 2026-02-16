@@ -12,6 +12,9 @@ import {
     sendSignInLinkToEmail,
     isSignInWithEmailLink,
     signInWithEmailLink,
+    signInWithEmailAndPassword,
+    createUserWithEmailAndPassword,
+    sendPasswordResetEmail,
     User
 } from "firebase/auth";
 
@@ -20,29 +23,33 @@ export default function RegisterPage() {
     const [authLoading, setAuthLoading] = useState(true);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [statusMessage, setStatusMessage] = useState("");
     const [success, setSuccess] = useState(false);
 
     // Email Auth State
     const [email, setEmail] = useState("");
+    const [password, setPassword] = useState("");
+    const [isRegistering, setIsRegistering] = useState(false);
+    const [usePassword, setUsePassword] = useState(false);
     const [emailSent, setEmailSent] = useState(false);
 
     const router = useRouter();
 
     useEffect(() => {
+        // ... (rest of useEffect)
         // Check for email link sign-in match
         if (isSignInWithEmailLink(clientAuth, window.location.href)) {
-            let emailForSignIn = window.localStorage.getItem('emailForSignIn');
-            if (!emailForSignIn) {
-                emailForSignIn = window.prompt('Please provide your email for confirmation');
-            }
-            if (emailForSignIn) {
-                signInWithEmailLink(clientAuth, emailForSignIn, window.location.href)
-                    .then(() => {
-                        window.localStorage.removeItem('emailForSignIn');
-                        // User will be updated by onAuthStateChanged
-                    })
-                    .catch((err) => setError(err.message));
-            }
+            const emailForSignIn = window.localStorage.getItem('emailForSignIn') || "";
+            signInWithEmailLink(clientAuth, emailForSignIn, window.location.href)
+                .then(() => {
+                    window.localStorage.removeItem('emailForSignIn');
+                })
+                .catch((err) => {
+                    // If email is missing, we could prompt, but the user wants to avoid it.
+                    // Instead, we'll let it fail or the user can sign in again if needed.
+                    console.error("Link sign-in error:", err);
+                    setError("Sign-in link expired or invalid email. Please try again.");
+                });
         }
 
         const unsubscribe = onAuthStateChanged(clientAuth, (currentUser) => {
@@ -75,6 +82,72 @@ export default function RegisterPage() {
         }
     }
 
+    async function handleForgotPassword() {
+        if (!email) {
+            setError("Please enter your email address first.");
+            return;
+        }
+        try {
+            setLoading(true);
+            setError("");
+            setStatusMessage("");
+            await sendPasswordResetEmail(clientAuth, email);
+            setStatusMessage("Password reset email sent! Please check your inbox (and spam folder).");
+        } catch (err: any) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function handlePasswordAuth(e: FormEvent) {
+        e.preventDefault();
+        setLoading(true);
+        setError("");
+        setStatusMessage("");
+        try {
+            if (isRegistering) {
+                // Register
+                try {
+                    await createUserWithEmailAndPassword(clientAuth, email, password);
+                } catch (regErr: any) {
+                    if (regErr.code === "auth/email-already-in-use") {
+                        setError("Account exists. Sign in or reset password.");
+                    } else {
+                        setError(regErr.message);
+                    }
+                    setLoading(false);
+                    return;
+                }
+            } else {
+                // Login
+                await signInWithEmailAndPassword(clientAuth, email, password);
+            }
+
+            // Check if registered in Firestore
+            const res = await authorizedFetch("/api/auth/me");
+            if (res.ok) {
+                const data = await res.json();
+                if (data.user?.companyId) {
+                    localStorage.setItem("companyId", data.user.companyId);
+                    router.push("/my-company");
+                    return;
+                }
+            }
+            // User logged in but no company profile found, continue to step 2
+        } catch (err: any) {
+            if (err.code === "auth/user-not-found" || err.code === "auth/invalid-credential") {
+                setError("Invalid email or password. Please try again or create an account.");
+            } else if (err.code === "auth/wrong-password") {
+                setError("Incorrect password. Try again or use 'Forgot Password'.");
+            } else {
+                setError(err.message);
+            }
+        } finally {
+            setLoading(false);
+        }
+    }
+
     async function onSubmit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (!user) {
@@ -88,9 +161,9 @@ export default function RegisterPage() {
         const form = new FormData(event.currentTarget);
         const payload = {
             companyName: String(form.get("companyName") || ""),
-            notificationEmail: String(form.get("notificationEmail") || ""),
             userName: String(form.get("userName") || ""),
-            website: String(form.get("website") || "")
+            website: String(form.get("website") || ""),
+            role: String(form.get("role") || "participant")
         };
 
         try {
@@ -103,6 +176,9 @@ export default function RegisterPage() {
             const data = await res.json();
 
             if (res.ok) {
+                if (data.companyId) {
+                    localStorage.setItem("companyId", data.companyId);
+                }
                 setSuccess(true);
                 setTimeout(() => router.push("/my-company"), 2000);
             } else {
@@ -150,152 +226,138 @@ export default function RegisterPage() {
                     REGISTER
                 </h1>
                 <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginTop: 4, fontWeight: 500 }}>
-                    Join Sting Sales Competition
+                    Create your competition profile in 2 easy steps
                 </p>
             </header>
 
-            {!user ? (
-                <section className="card glow">
-                    <h2 style={{ fontSize: '18px', fontWeight: 900, marginBottom: 24, color: '#fff' }}>Access Required</h2>
-                    <p style={{ color: 'var(--text-muted)', marginBottom: 24, fontSize: '14px' }}>
-                        You need to sign in verified account before registering your company.
-                    </p>
-
-                    <button
-                        onClick={handleGoogleSignIn}
-                        style={{
-                            width: '100%',
-                            padding: '16px',
-                            background: '#fff',
-                            color: '#000',
-                            border: 'none',
-                            borderRadius: '12px',
-                            fontSize: '15px',
-                            fontWeight: 700,
-                            marginBottom: 24,
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: 12
-                        }}
-                    >
-                        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" /><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" /><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" /><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" /></svg>
-                        Sign in with Google
-                    </button>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-                        <div style={{ height: 1, flexGrow: 1, background: 'var(--border)' }}></div>
-                        <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>OR USE EMAIL</span>
-                        <div style={{ height: 1, flexGrow: 1, background: 'var(--border)' }}></div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+                {/* Step 1: Authentication */}
+                <section className={`card glow ${user ? 'completed' : 'active'}`} style={{ opacity: user ? 0.7 : 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: user ? 'var(--accent-mint)' : 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 900, color: user ? '#000' : '#fff' }}>
+                            {user ? '✓' : '1'}
+                        </div>
+                        <h2 style={{ fontSize: '18px', fontWeight: 900, margin: 0, color: '#fff' }}>Verify Identity</h2>
                     </div>
 
-                    {!emailSent ? (
-                        <form onSubmit={handleEmailLinkSignIn} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                            <input
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                placeholder="name@company.com"
-                                required
-                                style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
-                            />
-                            <button
-                                type="submit"
-                                style={{
-                                    padding: '16px',
-                                    background: 'rgba(255,255,255,0.1)',
-                                    color: '#fff',
-                                    border: '1px solid var(--border)',
-                                    borderRadius: '12px',
-                                    fontSize: '14px',
-                                    fontWeight: 700,
-                                    cursor: 'pointer'
-                                }}
-                            >
-                                Send Login Link
-                            </button>
-                        </form>
-                    ) : (
-                        <div style={{ textAlign: 'center', padding: '24px', background: 'rgba(0, 255, 157, 0.1)', borderRadius: '12px', color: 'var(--accent-mint)' }}>
-                            <div style={{ fontSize: '24px', marginBottom: 8 }}>📧</div>
-                            <p style={{ fontWeight: 600 }}>Check your inbox!</p>
-                            <p style={{ fontSize: '12px', opacity: 0.8 }}>We sent a secure link to {email}</p>
-                        </div>
-                    )}
+                    {!user ? (
+                        <>
+                            <p style={{ color: 'var(--text-muted)', marginBottom: 24, fontSize: '14px' }}>
+                                Sign in to link your account to your company profile.
+                            </p>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
+                                <div style={{ height: 1, flexGrow: 1, background: 'var(--border)' }}></div>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>EMAIL & PASSWORD</span>
+                                <div style={{ height: 1, flexGrow: 1, background: 'var(--border)' }}></div>
+                            </div>
 
-                    {error && (
-                        <div style={{ padding: '12px', marginTop: 24, background: 'rgba(255, 68, 68, 0.1)', border: '1px solid rgba(255, 68, 68, 0.2)', borderRadius: '8px', color: '#ff4444', fontSize: '13px', fontWeight: 600 }}>
-                            {error}
+                            <form onSubmit={handlePasswordAuth} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                <input
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    placeholder="name@company.com"
+                                    required
+                                    style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
+                                />
+                                <input
+                                    type="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder="Enter password"
+                                    required
+                                    style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
+                                />
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: -8 }}>
+                                    <button
+                                        type="button"
+                                        onClick={handleForgotPassword}
+                                        style={{ background: 'none', border: 'none', color: 'var(--accent-mint)', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline' }}
+                                    >
+                                        Forgot Password?
+                                    </button>
+                                </div>
+                                {error && (
+                                    <div style={{ padding: '12px', background: 'rgba(255, 68, 68, 0.1)', border: '1px solid rgba(255, 68, 68, 0.2)', borderRadius: '8px', color: '#ff4444', fontSize: '13px', fontWeight: 600 }}>
+                                        {error}
+                                    </div>
+                                )}
+                                {statusMessage && (
+                                    <div style={{ padding: '12px', background: 'rgba(0, 255, 157, 0.1)', border: '1px solid rgba(0, 255, 157, 0.2)', borderRadius: '8px', color: 'var(--accent-mint)', fontSize: '13px', fontWeight: 600 }}>
+                                        {statusMessage}
+                                    </div>
+                                )}
+                                <button type="submit" disabled={loading} style={{ padding: '16px', background: 'var(--accent-mint)', color: '#000', border: 'none', borderRadius: '12px', fontSize: '14px', fontWeight: 900, cursor: 'pointer', transition: 'all 0.2s ease', boxShadow: '0 4px 20px rgba(0, 255, 157, 0.2)' }}>
+                                    {loading ? 'AUTHENTICATING...' : isRegistering ? 'CREATE ACCOUNT' : 'SIGN IN'}
+                                </button>
+                                <div style={{ textAlign: 'center' }}>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsRegistering(!isRegistering);
+                                            setError("");
+                                        }}
+                                        style={{ background: 'none', border: 'none', color: 'var(--accent-mint)', fontSize: '12px', cursor: 'pointer', fontWeight: 700 }}
+                                    >
+                                        {isRegistering ? 'Already have an account? Sign In' : "Don't have an account? Create Account"}
+                                    </button>
+                                </div>
+                            </form>
+                        </>
+                    ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em' }}>VERIFIED ACCOUNT</div>
+                                <div style={{ color: 'var(--accent-mint)', fontWeight: 700 }}>{user.email}</div>
+                            </div>
+                            <button onClick={() => clientAuth.signOut()} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', padding: '8px 12px', borderRadius: '8px', color: '#fff', fontSize: '12px', cursor: 'pointer' }}>Change</button>
                         </div>
                     )}
                 </section>
-            ) : (
-                <section className="card glow">
-                    <div style={{ marginBottom: 24, paddingBottom: 24, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 700 }}>SIGNED IN AS</div>
-                            <div style={{ color: '#fff', fontWeight: 500 }}>{user.email}</div>
+
+                {/* Step 2: Company Details */}
+                <section className={`card glow ${user ? 'active' : ''}`} style={{ opacity: user ? 1 : 0.4, pointerEvents: user ? 'auto' : 'none' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: user ? 'var(--accent-mint)' : 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 900, color: user ? '#000' : '#fff' }}>
+                            2
                         </div>
-                        <button
-                            onClick={() => clientAuth.signOut()}
-                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '12px', textDecoration: 'underline', cursor: 'pointer' }}
-                        >
-                            Change Account
-                        </button>
+                        <h2 style={{ fontSize: '18px', fontWeight: 900, margin: 0, color: '#fff' }}>Company Profile</h2>
                     </div>
 
                     <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
                         <div className="input-group">
-                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>
-                                YOUR NAME
-                            </label>
-                            <input
-                                name="userName"
-                                required
-                                placeholder="e.g. Sarah Jenkins"
-                                defaultValue={user.displayName || ""}
-                                style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
-                            />
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>YOUR NAME</label>
+                            <input name="userName" required placeholder="e.g. Sarah Jenkins" defaultValue={user?.displayName || ""} style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }} />
                         </div>
 
                         <div className="input-group">
-                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>
-                                COMPANY NAME
-                            </label>
-                            <input
-                                name="companyName"
-                                required
-                                placeholder="e.g. CloudScale AI"
-                                style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
-                            />
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>COMPANY NAME</label>
+                            <input name="companyName" required placeholder="e.g. CloudScale AI" style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }} />
                         </div>
 
                         <div className="input-group">
-                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>
-                                COMPANY WEBSITE
-                            </label>
-                            <input
-                                name="website"
-                                type="url"
-                                required
-                                placeholder="e.g. https://cloudscale.ai"
-                                style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
-                            />
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>COMPANY WEBSITE</label>
+                            <input name="website" type="url" required placeholder="https://..." style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }} />
                         </div>
 
                         <div className="input-group">
-                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>
-                                NOTIFICATION EMAIL
-                            </label>
-                            <input
-                                name="notificationEmail"
-                                type="email"
-                                required
-                                placeholder="e.g. sarah@cloudscale.ai"
-                                defaultValue={user.email || ""}
-                                style={{ width: '100%', padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '12px', color: '#fff', fontSize: '15px' }}
-                            />
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 900, color: 'var(--text-muted)', marginBottom: 12, letterSpacing: '0.05em' }}>YOUR ROLE</label>
+                            <div style={{ display: 'flex', gap: 16 }}>
+                                <label style={{ flex: 1, cursor: 'pointer' }}>
+                                    <input type="radio" name="role" value="participant" defaultChecked style={{ display: 'none' }} id="role-admin" />
+                                    <div className="role-card" onClick={() => (document.getElementById('role-admin') as any).click()}>
+                                        <div style={{ fontWeight: 700, fontSize: '14px' }}>Company Admin</div>
+                                        <div style={{ fontSize: '11px', opacity: 0.6 }}>Full submission power</div>
+                                    </div>
+                                </label>
+                                <label style={{ flex: 1, cursor: 'pointer' }}>
+                                    <input type="radio" name="role" value="guest" style={{ display: 'none' }} id="role-guest" />
+                                    <div className="role-card" onClick={() => (document.getElementById('role-guest') as any).click()}>
+                                        <div style={{ fontWeight: 700, fontSize: '14px' }}>Company Guest</div>
+                                        <div style={{ fontSize: '11px', opacity: 0.6 }}>View access only</div>
+                                    </div>
+                                </label>
+                            </div>
                         </div>
 
                         {error && (
@@ -306,28 +368,30 @@ export default function RegisterPage() {
 
                         <button
                             type="submit"
-                            disabled={loading}
-                            style={{
-                                marginTop: 12,
-                                padding: '18px',
-                                background: 'var(--accent-mint)',
-                                color: '#000',
-                                border: 'none',
-                                borderRadius: '12px',
-                                fontSize: '14px',
-                                fontWeight: 900,
-                                letterSpacing: '0.02em',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease',
-                                opacity: loading ? 0.6 : 1,
-                                boxShadow: '0 4px 20px rgba(0, 255, 157, 0.2)'
-                            }}
+                            disabled={loading || !user}
+                            style={{ marginTop: 12, padding: '18px', background: user ? 'var(--accent-mint)' : 'rgba(255,255,255,0.1)', color: user ? '#000' : 'rgba(255,255,255,0.3)', border: 'none', borderRadius: '12px', fontSize: '14px', fontWeight: 900, cursor: user ? 'pointer' : 'default', transition: 'all 0.2s ease', boxShadow: user ? '0 4px 20px rgba(0, 255, 157, 0.2)' : 'none' }}
                         >
-                            {loading ? 'INITIALIZING...' : 'CREATE ACCESS'}
+                            {loading ? 'PROCESSING...' : user ? 'COMPLETE REGISTRATION' : 'FINISH STEP 1 FIRST'}
                         </button>
                     </form>
                 </section>
-            )}
+            </div>
+
+            <style jsx>{`
+                .role-card {
+                    padding: 16px;
+                    border: 1px solid var(--border);
+                    border-radius: 12px;
+                    background: rgba(255,255,255,0.03);
+                    transition: all 0.2s ease;
+                    text-align: center;
+                }
+                input[type="radio"]:checked + .role-card {
+                    border-color: var(--accent-mint);
+                    background: rgba(0, 255, 157, 0.05);
+                    color: var(--accent-mint);
+                }
+            `}</style>
 
             <div style={{ marginTop: 40, textAlign: 'center' }}>
                 <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>

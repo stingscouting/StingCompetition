@@ -3,7 +3,8 @@ import { calculateDailyScore } from "@/lib/scoring";
 import { resolveDailyStreak } from "@/lib/streak";
 import { rankCompanies } from "@/lib/ranking";
 import { getCompetition } from "@/lib/repository";
-import { toDateKey } from "@/lib/time";
+import { toDateKey, nowIso } from "@/lib/time";
+import { calculateAchievements } from "@/lib/achievements";
 import type { Company } from "@/lib/types";
 
 interface MeetingDoc {
@@ -44,9 +45,16 @@ export async function recomputeAllCompanyScores(): Promise<void> {
 
     let totalPoints = 0;
     let streakCount = 0;
-    let shieldUsed = company.shieldUsed;
+    let shieldUsed = !!company.shieldUsed;
+    let shieldAvailable = company.shieldAvailable !== false;
+    let lastBrokenStreak = company.lastBrokenStreak || 0;
+    let shieldUsedDateKey = company.shieldUsedDateKey;
+    let shieldRecoveryRequested = !!company.shieldRecoveryRequested;
     let lastSubmissionDate = company.lastSubmissionDate;
     let previousKey: string | null = null;
+
+    // Internal flag to track if the shield was *actually* needed this run
+    let shieldActuallyBridgedGap = false;
 
     const orderedKeys = [...byDay.keys()].sort();
     for (const dateKey of orderedKeys) {
@@ -55,14 +63,22 @@ export async function recomputeAllCompanyScores(): Promise<void> {
         const gap = dayDiff(previousKey, dateKey);
         if (gap > 1) {
           for (let i = 0; i < gap - 1; i += 1) {
-            const missed = resolveDailyStreak({
-              hadMeetingToday: false,
-              previousStreak: streakCount,
-              shieldAvailable: company.shieldAvailable,
-              shieldUsed
-            });
-            streakCount = missed.streakCount;
-            shieldUsed = missed.shieldUsed;
+            const gapDate = new Date(new Date(`${previousKey}T00:00:00.000Z`).getTime() + (i + 1) * 86400000).toISOString().split('T')[0];
+
+            if (shieldUsedDateKey === gapDate) {
+              // Streak preserved by existing shield usage
+              shieldActuallyBridgedGap = true;
+            } else if (shieldRecoveryRequested && !shieldUsed) {
+              // CONSUME SHIELD: Intent found and shield available for this gap
+              shieldUsed = true;
+              shieldUsedDateKey = gapDate;
+              shieldRecoveryRequested = false;
+              shieldActuallyBridgedGap = true;
+              // Streak preserved
+            } else {
+              if (streakCount > 0) lastBrokenStreak = streakCount;
+              streakCount = 0;
+            }
           }
         }
       }
@@ -72,18 +88,52 @@ export async function recomputeAllCompanyScores(): Promise<void> {
 
       const resolved = resolveDailyStreak({
         hadMeetingToday: count > 0,
-        previousStreak: streakCount,
-        shieldAvailable: company.shieldAvailable,
-        shieldUsed
+        previousStreak: streakCount
       });
 
       streakCount = resolved.streakCount;
-      shieldUsed = resolved.shieldUsed;
       if (count > 0) {
         lastSubmissionDate = dateKey;
       }
       previousKey = dateKey;
     }
+
+    // Handle gap until today
+    const todayKey = toDateKey(nowIso(), competition.timezone);
+    if (previousKey && previousKey < todayKey) {
+      const gap = dayDiff(previousKey, todayKey);
+      if (gap > 1) {
+        for (let i = 0; i < gap - 1; i += 1) {
+          const gapDate = new Date(new Date(`${previousKey}T00:00:00.000Z`).getTime() + (i + 1) * 86400000).toISOString().split('T')[0];
+
+          if (shieldUsedDateKey === gapDate) {
+            // Streak preserved
+            shieldActuallyBridgedGap = true;
+          } else if (shieldRecoveryRequested && !shieldUsed) {
+            // CONSUME SHIELD
+            shieldUsed = true;
+            shieldUsedDateKey = gapDate;
+            shieldRecoveryRequested = false;
+            shieldActuallyBridgedGap = true;
+          } else {
+            if (streakCount > 0) lastBrokenStreak = streakCount;
+            streakCount = 0;
+          }
+        }
+      }
+    }
+
+    // Final Audit: If shield was marked used but didn't bridge any gap, REFUND IT.
+    // This handles cases where a shield was "used" manually or erroneously.
+    if (shieldUsed && !shieldActuallyBridgedGap) {
+      shieldUsed = false;
+      shieldUsedDateKey = undefined;
+    }
+
+    const achievements = calculateAchievements(
+      { totalValidMeetings: relevant.length, shieldUsed },
+      company.achievements || []
+    );
 
     return {
       ...company,
@@ -91,7 +141,12 @@ export async function recomputeAllCompanyScores(): Promise<void> {
       totalValidMeetings: relevant.length,
       streakCount,
       shieldUsed,
-      lastSubmissionDate
+      shieldAvailable,
+      lastSubmissionDate,
+      achievements,
+      lastBrokenStreak,
+      shieldUsedDateKey,
+      shieldRecoveryRequested
     };
   });
 
@@ -100,14 +155,22 @@ export async function recomputeAllCompanyScores(): Promise<void> {
 
   ranked.forEach((company) => {
     const ref = adminDb.collection("companies").doc(company.id);
-    batch.update(ref, {
+    const updateData: any = {
       totalPoints: company.totalPoints,
       totalValidMeetings: company.totalValidMeetings,
       streakCount: company.streakCount,
       shieldUsed: company.shieldUsed,
-      lastSubmissionDate: company.lastSubmissionDate,
-      rank: company.rank
-    });
+      shieldAvailable: company.shieldAvailable,
+      rank: company.rank,
+      achievements: company.achievements,
+      lastBrokenStreak: company.lastBrokenStreak,
+      shieldUsedDateKey: company.shieldUsedDateKey || null,
+      shieldRecoveryRequested: company.shieldRecoveryRequested
+    };
+    if (company.lastSubmissionDate) {
+      updateData.lastSubmissionDate = company.lastSubmissionDate;
+    }
+    batch.update(ref, updateData);
   });
 
   await batch.commit();
