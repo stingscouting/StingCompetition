@@ -1,6 +1,6 @@
-export type UserRole = "admin" | "participant";
+export type UserRole = "admin" | "participant" | "guest";
 export type CompetitionStatus = "DRAFT" | "ACTIVE" | "ENDED";
-export type MeetingType = "digital" | "physical";
+export type MeetingType = "digital" | "in person";
 export type BestPracticeStatus = "pending" | "approved" | "rejected";
 export type MeetingStatus = "valid" | "invalid" | "deleted";
 
@@ -30,6 +30,10 @@ export interface Company {
   rank: number;
   website?: string;
   logoUrl?: string;
+  achievements: string[];
+  lastBrokenStreak: number;
+  shieldUsedDateKey?: string;
+  shieldRecoveryRequested?: boolean;
 }
 
 export interface UserProfile {
@@ -38,6 +42,7 @@ export interface UserProfile {
   email: string;
   role: UserRole;
   companyId: string;
+  companyName?: string;
 }
 
 export interface Meeting {

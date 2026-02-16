@@ -6,7 +6,7 @@ export const meetingInputSchema = z.object({
   contactName: z.string().trim().min(1),
   meetingAt: z.string().datetime(),
   durationMinutes: z.number().int().min(MIN_DURATION_MINUTES),
-  type: z.enum(["digital", "physical"])
+  type: z.enum(["digital", "in person"])
 });
 
 export const bestPracticeInputSchema = z.object({
@@ -19,4 +19,14 @@ export const rulesUpdateSchema = z.object({
 
 export function normalizeProspect(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function getDomainFromUrl(url: string): string {
+  try {
+    const hostname = new URL(url).hostname;
+    // Remove www. if present
+    return hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
 }

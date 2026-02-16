@@ -10,23 +10,19 @@ interface StreakResolution {
   shieldUsed: boolean;
 }
 
-export function resolveDailyStreak(input: StreakResolutionInput): StreakResolution {
+export function resolveDailyStreak(input: {
+  hadMeetingToday: boolean;
+  previousStreak: number;
+}): { streakCount: number } {
   if (input.hadMeetingToday) {
     return {
-      streakCount: input.previousStreak + 1,
-      shieldUsed: input.shieldUsed
+      streakCount: input.previousStreak + 1
     };
   }
 
-  if (input.shieldAvailable && !input.shieldUsed) {
-    return {
-      streakCount: input.previousStreak,
-      shieldUsed: true
-    };
-  }
-
+  // Reactive logic: Always reset to 0 if meeting missed.
+  // Recovery is handled manually via Best Practice API.
   return {
-    streakCount: 0,
-    shieldUsed: input.shieldUsed
+    streakCount: 0
   };
 }

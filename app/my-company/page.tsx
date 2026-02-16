@@ -17,25 +17,30 @@ interface CompanyStats {
   rank: number;
   shieldAvailable: boolean;
   shieldUsed: boolean;
+  lastBrokenStreak?: number;
+  shieldUsedDateKey?: string;
   achievements?: string[];
   logoUrl?: string;
+  activity?: string[]; // Date keys of active days
 }
 
 const MOCK_COMPANY: CompanyStats = {
-  id: "demo-c1",
-  name: "Sarah Jenkins",
-  rank: 1,
-  totalPoints: 242500,
-  totalValidMeetings: 24,
-  streakCount: 7,
-  shieldAvailable: true,
+  id: "error",
+  name: "Profile Syncing...",
+  rank: 0,
+  totalPoints: 0,
+  totalValidMeetings: 0,
+  streakCount: 0,
+  shieldAvailable: false,
   shieldUsed: false,
-  achievements: ["Closer King"]
+  achievements: [],
+  activity: []
 };
 
 export default function MyCompanyPage() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [company, setCompany] = useState<CompanyStats | null>(null);
+  const [competition, setCompetition] = useState<{ timezone: string; weekKeys: string[] } | null>(null);
   const [loadError, setLoadError] = useState("");
   const router = useRouter();
 
@@ -51,66 +56,109 @@ export default function MyCompanyPage() {
       setIsAuthenticated(Boolean(user));
       if (!user) {
         checkRegistration();
-        // Force mock data for demonstration ONLY IF on a demo-like environment or testing
-        // But for production, we want strict redirection
-        setCompany(MOCK_COMPANY);
       }
     });
     return () => stop();
   }, [router]);
 
   async function loadCompany() {
-    const res = await authorizedFetch("/api/company/me/stats");
-    const data = await res.json();
-    if (!res.ok || !data.company) {
-      setLoadError(data.error || "Failed to load company stats");
-      setCompany(MOCK_COMPANY); // Fallback if API fails
-      return;
+    try {
+      const res = await authorizedFetch("/api/company/me/stats");
+      if (!res.ok) {
+        // Retry once if 401 (Unauthorized) - common early race condition
+        if (res.status === 401) {
+          await new Promise(r => setTimeout(r, 1500));
+          const retry = await authorizedFetch("/api/company/me/stats");
+          if (retry.ok) {
+            const data = await retry.json();
+            if (data.company) {
+              setCompany(data.company as CompanyStats);
+              setCompetition(data.competition);
+              setLoadError("");
+              return;
+            }
+          }
+        }
+        setLoadError(res.status === 401 ? "Authenticating..." : "Failed to fetch statistics");
+        setCompany(MOCK_COMPANY);
+        return;
+      }
+      const data = await res.json();
+      if (!data.company) {
+        setLoadError("Company profile not found");
+        setCompany(MOCK_COMPANY);
+        return;
+      }
+      setCompany(data.company as CompanyStats);
+      setCompetition(data.competition);
+      setLoadError("");
+    } catch (err) {
+      setCompany(MOCK_COMPANY);
     }
-    setCompany(data.company as CompanyStats);
   }
 
   useEffect(() => {
     if (isAuthenticated) loadCompany();
+
+    // Listen for meeting submissions to refresh data
+    const handleRefresh = () => loadCompany();
+    window.addEventListener("meeting:submitted", handleRefresh);
+    return () => window.removeEventListener("meeting:submitted", handleRefresh);
   }, [isAuthenticated]);
 
-  const activityDays = [
-    { l: "M", a: true }, { l: "T", a: true }, { l: "W", a: true },
-    { l: "T", a: true }, { l: "F", a: true }, { l: "S", a: false }, { l: "S", a: false, active: true }
-  ];
+  const getStreakDays = () => {
+    const labels = ["M", "T", "W", "T", "F", "S", "S"];
+
+    // Use weekKeys provided by backend for perfect sync
+    if (competition && competition.weekKeys) {
+      return competition.weekKeys.map((key: string, i: number) => {
+        const isActive = company?.activity?.includes(key) || false;
+        return { l: labels[i], a: isActive, active: false, date: key };
+      });
+    }
+
+    // Fallback if competition data not loaded yet
+    return labels.map(l => ({ l, a: false, active: false, date: "" }));
+  };
+
+  const activityDays = getStreakDays();
 
   return (
     <main className="page">
       <Nav />
 
       <header style={{ marginBottom: 40, borderBottom: '1px solid var(--border)', paddingBottom: 32 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 24 }}>
-          <div className="rank-avatar" style={{
-            width: 64,
-            height: 64,
-            fontSize: '28px',
-            background: 'linear-gradient(135deg, var(--accent-mint) 0%, #00e5ff 100%)',
-            color: '#000',
-            border: 'none',
-            boxShadow: '0 0 20px rgba(0, 255, 157, 0.3)',
-            overflow: 'hidden',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}>
-            {company?.logoUrl ? (
-              <img src={company.logoUrl} alt={company.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            ) : (
-              company?.name?.[0] || 'C'
-            )}
-          </div>
-          <div>
-            <h1 style={{ fontSize: '32px', fontWeight: 900, margin: 0, letterSpacing: '-0.02em', background: 'linear-gradient(to right, #fff, var(--text-muted))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-              {company?.name || 'My Company'}
-            </h1>
-            <p style={{ color: 'var(--accent-mint)', fontSize: '10px', fontWeight: 900, letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: 4 }}>
-              Active Competitor
-            </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+            <div className="rank-avatar" style={{
+              width: 64,
+              height: 64,
+              fontSize: '28px',
+              background: 'linear-gradient(135deg, var(--accent-mint) 0%, #00e5ff 100%)',
+              color: '#000',
+              border: 'none',
+              boxShadow: '0 0 20px rgba(0, 255, 157, 0.3)',
+              overflow: 'hidden',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              {company?.logoUrl ? (
+                <img src={company.logoUrl} alt={company.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                company?.name?.[0] || '?'
+              )}
+            </div>
+            <div>
+              <h1 style={{ fontSize: '32px', fontWeight: 900, margin: 0, letterSpacing: '-0.02em', background: 'linear-gradient(to right, #fff, var(--text-muted))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                {company?.name || (loadError ? "Profile Unavailable" : "Fetching Profile...")}
+              </h1>
+              {company && company.id !== "error" && (
+                <p style={{ color: 'var(--accent-mint)', fontSize: '10px', fontWeight: 900, letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: 4 }}>
+                  Active Competitor
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -127,7 +175,7 @@ export default function MyCompanyPage() {
           <div className="stat-label">🏆 Rank</div>
           <div className="stat-value" style={{ fontSize: '24px', marginTop: 8 }}>#{company?.rank || '-'}</div>
           <div className="progress-bar-container" style={{ marginTop: 12 }}>
-            <div className="progress-bar-fill" style={{ width: '92%', background: 'linear-gradient(90deg, var(--accent-mint), #00e5ff)' }} />
+            <div className="progress-bar-fill" style={{ width: company?.rank ? '100%' : '0%', background: 'linear-gradient(90deg, var(--accent-mint), #00e5ff)' }} />
           </div>
         </div>
 
@@ -135,7 +183,7 @@ export default function MyCompanyPage() {
           <div className="stat-label">🤝 Meetings</div>
           <div className="stat-value" style={{ fontSize: '24px', marginTop: 8 }}>{company?.totalValidMeetings || 0}</div>
           <div className="progress-bar-container" style={{ marginTop: 12 }}>
-            <div className="progress-bar-fill" style={{ width: '68%' }} />
+            <div className="progress-bar-fill" style={{ width: company?.totalValidMeetings ? `${Math.min(100, (company.totalValidMeetings / 30) * 100)}%` : '0%' }} />
           </div>
         </div>
 
@@ -145,7 +193,7 @@ export default function MyCompanyPage() {
             {(company?.totalPoints || 0).toLocaleString()}
           </div>
           <div className="progress-bar-container" style={{ marginTop: 12 }}>
-            <div className="progress-bar-fill" style={{ width: '45%' }} />
+            <div className="progress-bar-fill" style={{ width: company?.totalPoints ? `${Math.min(100, (company.totalPoints / 1000) * 100)}%` : '0%' }} />
           </div>
         </div>
       </div>
@@ -162,8 +210,19 @@ export default function MyCompanyPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <h3 style={{ fontSize: '20px', fontWeight: 900, color: '#fff', margin: 0, letterSpacing: '-0.01em' }}>Daily Activity Streak</h3>
             <p style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-muted)', margin: 0 }}>
-              You&apos;re on fire, {company?.name || 'Team'}!
+              {company?.streakCount ? `You're on fire, ${company.name}!` :
+                (company?.shieldUsed === false && company?.lastBrokenStreak) ? 'Share an insight to restore your streak!' :
+                  company?.shieldUsed ? 'Shield consumed. No more recoveries.' :
+                    'Start logging meetings to build your streak!'}
             </p>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <span style={{ fontSize: '32px', filter: company?.shieldUsed ? 'grayscale(1) opacity(0.5)' : 'drop-shadow(0 0 10px rgba(0, 255, 157, 0.4))' }}>
+              {company?.shieldUsed ? '⚪' : '🛡️'}
+            </span>
+            <span style={{ fontSize: '10px', fontWeight: 900, color: company?.shieldUsed ? 'var(--text-muted)' : 'var(--accent-mint)', marginTop: 4 }}>
+              {company?.shieldUsed ? 'SHIELD USED' : 'SHIELD READY'}
+            </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <span style={{ fontSize: '32px', filter: 'drop-shadow(0 0 10px rgba(255, 107, 0, 0.4))' }}>🔥</span>
@@ -172,7 +231,7 @@ export default function MyCompanyPage() {
         </div>
 
         <div className="day-tracker" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          {activityDays.map((d, i) => (
+          {activityDays.map((d: { l: string; a: boolean; active: boolean; date: string }, i: number) => (
             <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
               <div
                 style={{
@@ -184,10 +243,10 @@ export default function MyCompanyPage() {
                   justifyContent: 'center',
                   fontSize: '18px',
                   ...(d.active ? {
-                    background: 'var(--accent-mint)',
-                    color: '#000',
-                    boxShadow: '0 0 20px rgba(0, 255, 157, 0.4)',
-                    border: 'none'
+                    border: `1.5px solid ${d.a ? 'var(--accent-mint)' : 'rgba(255,255,255,0.2)'}`,
+                    background: d.a ? 'var(--accent-mint)' : 'transparent',
+                    color: d.a ? '#000' : 'var(--accent-mint)',
+                    boxShadow: d.a ? '0 0 20px rgba(0, 255, 157, 0.4)' : 'none'
                   } : d.a ? {
                     border: '1.5px solid var(--accent-mint)',
                     background: 'transparent',
@@ -199,7 +258,7 @@ export default function MyCompanyPage() {
                   })
                 }}
               >
-                {d.active ? "★" : d.a ? "✓" : ""}
+                {d.a ? (d.active ? "★" : "✓") : ""}
               </div>
               <span style={{
                 fontSize: '11px',

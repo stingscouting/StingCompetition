@@ -2,8 +2,9 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import { DEFAULT_MIN_COMPANIES } from "@/lib/constants";
 import { incrementalDelta } from "@/lib/scoring";
-import { nowIso } from "@/lib/time";
+import { nowIso, toDateKey } from "@/lib/time";
 import { normalizeProspect } from "@/lib/validation";
+import { calculateAchievements, getNewAchievements } from "@/lib/achievements";
 import type { BestPracticeStatus, CompetitionConfig, Company, Meeting } from "@/lib/types";
 
 export async function getCompetition(): Promise<CompetitionConfig | null> {
@@ -80,11 +81,11 @@ export async function createMeeting(input: {
   contactName: string;
   meetingAt: string;
   durationMinutes: number;
-  type: "digital" | "physical";
+  type: "digital" | "in person";
   createdAt: string;
   submissionDateKey: string;
-}): Promise<Meeting> {
-  const dateKey = input.submissionDateKey;
+}): Promise<{ meeting: Meeting; newAchievements: string[] }> {
+  const dateKey = input.submissionDateKey || new Date().toISOString().split('T')[0];
   const currentCount = await getCompanyDayMeetingCount(input.companyId, dateKey);
   const nextCount = currentCount + 1;
   const delta = incrementalDelta(currentCount, nextCount);
@@ -105,12 +106,19 @@ export async function createMeeting(input: {
     dateKey
   };
 
+  let initialAchievements: string[] = [];
+
   await adminDb.runTransaction(async (tx) => {
     const companyRef = adminDb.collection("companies").doc(input.companyId);
     const companyDoc = await tx.get(companyRef);
     if (!companyDoc.exists) {
       throw new Error("Company not found");
     }
+
+    const companyData = companyDoc.data()!;
+    initialAchievements = companyData.achievements || [];
+    const shieldUsed = !!companyData.shieldUsed;
+    const shieldAvailable = companyData.shieldAvailable !== false;
 
     tx.set(ref, {
       ...meeting,
@@ -121,6 +129,12 @@ export async function createMeeting(input: {
       totalPoints: FieldValue.increment(delta),
       totalValidMeetings: FieldValue.increment(1),
       lastSubmissionDate: dateKey,
+      shieldUsed,
+      shieldAvailable,
+      achievements: calculateAchievements(
+        { totalValidMeetings: (companyData.totalValidMeetings || 0) + 1, shieldUsed },
+        initialAchievements
+      ),
       updatedAt: Timestamp.now()
     });
 
@@ -136,7 +150,13 @@ export async function createMeeting(input: {
     );
   });
 
-  return { id: ref.id, ...meeting };
+  // Fetch updated company after transaction to see new state (for new achievements)
+  const updatedCompany = await getCompany(input.companyId);
+  const newAchievements = updatedCompany
+    ? getNewAchievements(initialAchievements, updatedCompany.achievements || [])
+    : [];
+
+  return { meeting: { id: ref.id, ...meeting }, newAchievements };
 }
 
 export async function updateBestPracticeStatus(input: {
@@ -169,4 +189,25 @@ export async function updateBestPracticeStatus(input: {
       }
     }
   });
+}
+export async function getCompanyWeeklyActivity(companyId: string, startDateKey: string, endDateKey: string): Promise<string[]> {
+  // Fetch all meetings for company to avoid composite index requirements
+  // Range and status filtering performed in-memory for maximum reliability
+  const snap = await adminDb
+    .collection("meetings")
+    .where("companyId", "==", companyId)
+    .get();
+
+  const activeDates = new Set<string>();
+  snap.forEach(doc => {
+    const data = doc.data();
+    const isWithinRange = data.dateKey >= startDateKey && data.dateKey <= endDateKey;
+    const isValid = data.status === "valid";
+
+    if (isWithinRange && isValid && data.dateKey) {
+      activeDates.add(data.dateKey);
+    }
+  });
+
+  return Array.from(activeDates).sort();
 }

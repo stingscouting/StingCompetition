@@ -9,11 +9,11 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "dateKey",
+          "fieldPath": "status",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "status",
+          "fieldPath": "dateKey",
           "order": "ASCENDING"
         }
       ]
